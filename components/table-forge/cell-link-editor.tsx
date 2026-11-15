@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { InternalLinkPicker } from "./internal-link-picker";
 import type { PickerKind, SelectedInternalPage } from "@/lib/sitecore-pages";
+import { buildItemHref } from "@/lib/item-id";
 
 interface CellLinkEditorProps {
   /** Called with an anchor HTML string to insert into the cell content */
@@ -93,7 +94,7 @@ export function CellLinkEditor({
    */
   const handlePicked = (item: SelectedInternalPage) => {
     setPicked(item);
-    setUrl(item.url);
+    setUrl(buildItemHref(item.id, item.kind));
     if (!label.trim()) setLabel(item.displayName);
     if (item.kind === "media") setOpenInNewTab(true);
     setPickerMode(null);
@@ -107,7 +108,9 @@ export function CellLinkEditor({
   const handleUrlChange = (value: string) => {
     setUrl(value);
     // Editing the URL by hand turns it back into a plain link
-    if (picked && value !== picked.url) setPicked(null);
+    if (picked && value !== buildItemHref(picked.id, picked.kind)) {
+      setPicked(null);
+    }
   };
 
   const inputClass =
@@ -202,11 +205,10 @@ export function CellLinkEditor({
           aria-label="URL"
         />
 
-        {picked?.urlSource === "derived" && (
-          <span className="text-[11px] text-warning-fg">
-            {isMedia
-              ? "This URL was built from the item id because Experience Edge could not be reached. Please open it once to check it works."
-              : "The URL was derived from the item path because Experience Edge could not be reached. Please double-check it."}
+        {picked && (
+          <span className="text-[11px] text-foreground/50">
+            Linked by Sitecore item id, so it keeps working if the item is
+            renamed or moved.
           </span>
         )}
       </div>

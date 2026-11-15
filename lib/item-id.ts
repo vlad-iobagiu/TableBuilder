@@ -35,6 +35,21 @@ export function toGuid(id: string): string {
 }
 
 /**
+ * Id-based Sitecore link for an item, so the link survives renames and moves.
+ * Pages use the link.aspx form, media items the .ashx media form; both are
+ * resolved to real URLs by Sitecore when the content is rendered.
+ */
+export function buildItemHref(
+  id: string,
+  kind: "page" | "media"
+): string {
+  const hex = itemIdKey(id).toUpperCase();
+  return kind === "media"
+    ? `/~/media/${hex}.ashx`
+    : `/~/link.aspx?_id=${hex}&_z=z`;
+}
+
+/**
  * File extension of a media URL such as `/-/media/Brochure.pdf?rev=1`.
  * Returns undefined when the URL carries none.
  */
