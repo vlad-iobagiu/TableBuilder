@@ -40,15 +40,56 @@ export interface CellFormat {
 }
 
 /**
+ * Row-level formatting metadata.
+ *
+ * These act as defaults for every cell in the row; a cell's own `CellFormat`
+ * always wins when it sets the same property (see `resolveCellColors`).
+ */
+export interface RowFormat {
+  /** Text color for the whole row (hex or CSS color name) */
+  color?: string;
+  /** Background color for the whole row (hex or CSS color name) */
+  backgroundColor?: string;
+}
+
+/**
+ * Hyperlink metadata for a cell.
+ * When present, the cell's content should render as a link to `url`.
+ */
+export interface CellLink {
+  /** Destination URL (required for the link to be active) */
+  url: string;
+  /** Optional display text. When empty, the cell content is used as the link text */
+  label?: string;
+  /** Open the link in a new browser tab (target="_blank") */
+  openInNewTab?: boolean;
+  /** Optional title/tooltip text (title attribute) */
+  title?: string;
+}
+
+/**
  * Represents a single cell in the table
  */
 export interface TableCell {
-  /** Cell content (plain text or HTML) */
+  /**
+   * Cell content as an inline HTML string.
+   * May contain text mixed with a small set of inline tags, e.g.
+   * `mytext <a href="#link">text</a>`. MUST be sanitized before rendering
+   * (see lib/sanitize.ts).
+   */
   content: string;
   /** Optional formatting for this cell */
   format?: CellFormat;
   /** Cell ID for tracking (generated UUID) */
   id: string;
+  /**
+   * Number of columns this cell spans (HTML `colspan`). Omitted or 1 = no span.
+   * Cells covered by the span stay in `TableRow.cells` (so every row keeps one
+   * entry per column) but must not be rendered — see `computeCoveredCells`.
+   */
+  colSpan?: number;
+  /** Number of rows this cell spans (HTML `rowspan`). Omitted or 1 = no span. */
+  rowSpan?: number;
 }
 
 /**
@@ -61,6 +102,25 @@ export interface TableRow {
   id: string;
   /** Whether this row is a header row */
   isHeader?: boolean;
+  /** Optional colors applied to every cell in this row unless the cell overrides them */
+  format?: RowFormat;
+}
+
+/**
+ * Resolves the effective text/background color for a cell.
+ *
+ * Precedence: the cell's own format wins, otherwise the row's format applies.
+ * Returns `undefined` for a color that is set in neither, so callers can leave
+ * the corresponding CSS property off entirely.
+ */
+export function resolveCellColors(
+  cellFormat: CellFormat | undefined,
+  rowFormat: RowFormat | undefined
+): { color?: string; backgroundColor?: string } {
+  return {
+    color: cellFormat?.color ?? rowFormat?.color,
+    backgroundColor: cellFormat?.backgroundColor ?? rowFormat?.backgroundColor,
+  };
 }
 
 /**
@@ -106,6 +166,176 @@ export interface TableData {
     createdBy?: string;
     modifiedBy?: string;
   };
+}
+
+/**
+ * Reads a cell's spans, coercing missing/invalid values to 1.
+ */
+export function getCellSpan(cell: TableCell | undefined): {
+  colSpan: number;
+  rowSpan: number;
+} {
+  return {
+    colSpan: Math.max(1, Math.floor(cell?.colSpan ?? 1)),
+    rowSpan: Math.max(1, Math.floor(cell?.rowSpan ?? 1)),
+  };
+}
+
+/**
+ * Marks every grid position that is hidden behind another cell's colspan/rowspan.
+ *
+ * Merged cells keep their placeholders in `row.cells` so the grid stays
+ * rectangular; renderers use this map to skip the placeholders. A placeholder
+ * that itself declares a span is ignored (spans never nest).
+ */
+export function computeCoveredCells(
+  rows: TableRow[],
+  columnCount: number
+): boolean[][] {
+  const covered: boolean[][] = rows.map(() =>
+    new Array<boolean>(columnCount).fill(false)
+  );
+
+  rows.forEach((row, rowIndex) => {
+    for (let colIndex = 0; colIndex < columnCount; colIndex++) {
+      if (covered[rowIndex][colIndex]) continue;
+
+      const { colSpan, rowSpan } = getCellSpan(row.cells[colIndex]);
+      if (colSpan === 1 && rowSpan === 1) continue;
+
+      for (let dr = 0; dr < rowSpan; dr++) {
+        for (let dc = 0; dc < colSpan; dc++) {
+          if (dr === 0 && dc === 0) continue;
+          const r = rowIndex + dr;
+          const c = colIndex + dc;
+          if (r < rows.length && c < columnCount) covered[r][c] = true;
+        }
+      }
+    }
+  });
+
+  return covered;
+}
+
+/**
+ * Whether a cell can be resized to the given span without running past the
+ * table edge or colliding with another merged cell.
+ */
+export function canSpanCell(
+  rows: TableRow[],
+  columnCount: number,
+  rowIndex: number,
+  cellIndex: number,
+  colSpan: number,
+  rowSpan: number
+): boolean {
+  if (colSpan < 1 || rowSpan < 1) return false;
+  if (rowIndex + rowSpan > rows.length) return false;
+  if (cellIndex + colSpan > columnCount) return false;
+
+  // Coverage as it would be with this cell reset to 1×1, so the cell's own
+  // current span never counts as a collision with itself.
+  const probeRows = rows.map((row, r) =>
+    r !== rowIndex
+      ? row
+      : {
+          ...row,
+          cells: row.cells.map((cell, c) =>
+            c !== cellIndex ? cell : { ...cell, colSpan: 1, rowSpan: 1 }
+          ),
+        }
+  );
+  const covered = computeCoveredCells(probeRows, columnCount);
+
+  for (let r = rowIndex; r < rowIndex + rowSpan; r++) {
+    for (let c = cellIndex; c < cellIndex + colSpan; c++) {
+      if (r === rowIndex && c === cellIndex) continue;
+      if (covered[r][c]) return false;
+      const { colSpan: otherCols, rowSpan: otherRows } = getCellSpan(
+        probeRows[r].cells[c]
+      );
+      if (otherCols > 1 || otherRows > 1) return false;
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Clamps every span to the current table bounds and trims any that overlap.
+ *
+ * Adding, removing and reordering rows/columns can leave spans pointing past
+ * the edge of the table or on top of each other; run this after any structural
+ * change so the grid stays renderable.
+ */
+export function normalizeTableSpans(data: TableData): TableData {
+  const columnCount = data.columns.length;
+  const rowCount = data.rows.length;
+
+  const covered: boolean[][] = data.rows.map(() =>
+    new Array<boolean>(columnCount).fill(false)
+  );
+  const rows = data.rows.map((row) => ({ ...row, cells: [...row.cells] }));
+
+  const setSpan = (r: number, c: number, colSpan: number, rowSpan: number) => {
+    const cell = rows[r].cells[c];
+    if (!cell) return;
+    rows[r].cells[c] = {
+      ...cell,
+      colSpan: colSpan > 1 ? colSpan : undefined,
+      rowSpan: rowSpan > 1 ? rowSpan : undefined,
+    };
+  };
+
+  for (let r = 0; r < rowCount; r++) {
+    for (let c = 0; c < columnCount; c++) {
+      const cell = rows[r].cells[c];
+      if (!cell) continue;
+
+      // Anything hidden behind an earlier span cannot carry a span of its own
+      if (covered[r][c]) {
+        setSpan(r, c, 1, 1);
+        continue;
+      }
+
+      const requested = getCellSpan(cell);
+      let colSpan = Math.min(requested.colSpan, columnCount - c);
+      let rowSpan = Math.min(requested.rowSpan, rowCount - r);
+
+      // Stop at the first column already taken by an earlier span
+      for (let dc = 1; dc < colSpan; dc++) {
+        if (covered[r][c + dc]) {
+          colSpan = dc;
+          break;
+        }
+      }
+      // Then at the first row where any of those columns is taken
+      for (let dr = 1; dr < rowSpan; dr++) {
+        let blocked = false;
+        for (let dc = 0; dc < colSpan; dc++) {
+          if (covered[r + dr][c + dc]) {
+            blocked = true;
+            break;
+          }
+        }
+        if (blocked) {
+          rowSpan = dr;
+          break;
+        }
+      }
+
+      setSpan(r, c, colSpan, rowSpan);
+
+      for (let dr = 0; dr < rowSpan; dr++) {
+        for (let dc = 0; dc < colSpan; dc++) {
+          if (dr === 0 && dc === 0) continue;
+          covered[r + dr][c + dc] = true;
+        }
+      }
+    }
+  }
+
+  return { ...data, rows };
 }
 
 /**

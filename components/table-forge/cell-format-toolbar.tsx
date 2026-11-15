@@ -17,6 +17,7 @@ import {
   AlignVerticalJustifyCenter,
   AlignVerticalJustifyEnd,
 } from "lucide-react";
+import { ColorPicker } from "./color-picker";
 
 interface CellFormatToolbarProps {
   format: CellFormat | undefined;
@@ -31,6 +32,7 @@ interface CellFormatToolbarProps {
  * - Text alignment (left, center, right)
  * - Vertical alignment (top, middle, bottom)
  * - Font weight (normal, medium, semibold, bold)
+ * - Text and background color (overrides the row's colors)
  */
 export function CellFormatToolbar({
   format,
@@ -56,8 +58,16 @@ export function CellFormatToolbar({
     onChange({ ...currentFormat, fontWeight });
   };
 
+  const handleColorChange = (color: string | undefined) => {
+    onChange({ ...currentFormat, color });
+  };
+
+  const handleBackgroundColorChange = (backgroundColor: string | undefined) => {
+    onChange({ ...currentFormat, backgroundColor });
+  };
+
   return (
-    <div className="flex items-center gap-4 p-3 bg-background/60 backdrop-blur rounded-xl border-2 shadow-sm">
+    <div className="flex flex-wrap items-center gap-4 p-3 bg-background/60 backdrop-blur rounded-xl border-2 shadow-sm">
       {/* Horizontal alignment */}
       <div className="flex items-center gap-2">
         <span className="text-xs font-bold text-foreground/70 tracking-wide uppercase mr-1">
@@ -236,6 +246,27 @@ export function CellFormatToolbar({
           </Button>
         </div>
       </div>
+
+      <Separator orientation="vertical" className="h-8 bg-border/50" />
+
+      {/* Colors */}
+      <ColorPicker
+        label="Text"
+        variant="text"
+        value={currentFormat.color}
+        onChange={handleColorChange}
+        disabled={disabled}
+        title="Cell text color"
+      />
+
+      <ColorPicker
+        label="Fill"
+        variant="fill"
+        value={currentFormat.backgroundColor}
+        onChange={handleBackgroundColorChange}
+        disabled={disabled}
+        title="Cell background color"
+      />
     </div>
   );
 }

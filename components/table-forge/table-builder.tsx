@@ -6,9 +6,15 @@ import { Button } from "@/components/ui/button";
 import {
   TableData,
   CellFormat,
+  RowFormat,
   createEmptyRow,
   createEmptyColumn,
   createEmptyCell,
+  resolveCellColors,
+  getCellSpan,
+  computeCoveredCells,
+  canSpanCell,
+  normalizeTableSpans,
 } from "@/lib/types/table";
 import {
   Plus,
@@ -20,6 +26,10 @@ import {
 } from "lucide-react";
 import { EditableCell } from "./editable-cell";
 import { CellFormatToolbar } from "./cell-format-toolbar";
+import { CellLinkEditor } from "./cell-link-editor";
+import { RowFormatToolbar } from "./row-format-toolbar";
+import { ColorPicker } from "./color-picker";
+import { CellSpanControls } from "./cell-span-controls";
 
 interface TableBuilderProps {
   data: TableData;
@@ -34,12 +44,21 @@ interface TableBuilderProps {
  * - Inline cell editing
  * - Row and column reordering
  * - Header row configuration
+ * - Row/cell colors and cell merging (colspan/rowspan)
  */
 export function TableBuilder({ data, onChange }: TableBuilderProps) {
   const [selectedCell, setSelectedCell] = useState<{
     rowIndex: number;
     cellIndex: number;
   } | null>(null);
+
+  /**
+   * Push a change that alters the grid shape (rows/columns added, removed or
+   * reordered), re-fitting any merged cells to the new bounds first.
+   */
+  const applyStructuralChange = (updatedData: TableData) => {
+    onChange(normalizeTableSpans(updatedData));
+  };
 
   /**
    * Add a new row at the end of the table
@@ -50,7 +69,7 @@ export function TableBuilder({ data, onChange }: TableBuilderProps) {
       ...data,
       rows: [...data.rows, newRow],
     };
-    onChange(updatedData);
+    applyStructuralChange(updatedData);
   };
 
   /**
@@ -65,7 +84,7 @@ export function TableBuilder({ data, onChange }: TableBuilderProps) {
       ...data,
       rows: updatedRows,
     };
-    onChange(updatedData);
+    applyStructuralChange(updatedData);
   };
 
   /**
@@ -80,7 +99,7 @@ export function TableBuilder({ data, onChange }: TableBuilderProps) {
       ...data,
       rows: updatedRows,
     };
-    onChange(updatedData);
+    applyStructuralChange(updatedData);
   };
 
   /**
@@ -99,7 +118,7 @@ export function TableBuilder({ data, onChange }: TableBuilderProps) {
       ...data,
       rows: updatedRows,
     };
-    onChange(updatedData);
+    applyStructuralChange(updatedData);
   };
 
   /**
@@ -118,7 +137,7 @@ export function TableBuilder({ data, onChange }: TableBuilderProps) {
       ...data,
       rows: updatedRows,
     };
-    onChange(updatedData);
+    applyStructuralChange(updatedData);
   };
 
   /**
@@ -139,7 +158,7 @@ export function TableBuilder({ data, onChange }: TableBuilderProps) {
       columns: updatedColumns,
       rows: updatedRows,
     };
-    onChange(updatedData);
+    applyStructuralChange(updatedData);
   };
 
   /**
@@ -165,7 +184,7 @@ export function TableBuilder({ data, onChange }: TableBuilderProps) {
       columns: updatedColumns,
       rows: updatedRows,
     };
-    onChange(updatedData);
+    applyStructuralChange(updatedData);
   };
 
   /**
@@ -188,7 +207,7 @@ export function TableBuilder({ data, onChange }: TableBuilderProps) {
       columns: updatedColumns,
       rows: updatedRows,
     };
-    onChange(updatedData);
+    applyStructuralChange(updatedData);
   };
 
   /**
@@ -217,7 +236,7 @@ export function TableBuilder({ data, onChange }: TableBuilderProps) {
       columns: updatedColumns,
       rows: updatedRows,
     };
-    onChange(updatedData);
+    applyStructuralChange(updatedData);
   };
 
   /**
@@ -246,7 +265,7 @@ export function TableBuilder({ data, onChange }: TableBuilderProps) {
       columns: updatedColumns,
       rows: updatedRows,
     };
-    onChange(updatedData);
+    applyStructuralChange(updatedData);
   };
 
   /**
@@ -317,6 +336,98 @@ export function TableBuilder({ data, onChange }: TableBuilderProps) {
   };
 
   /**
+   * Merge/unmerge a cell by setting its colspan/rowspan.
+   *
+   * The covered cells keep their content and formatting so unmerging restores
+   * them; they are simply not rendered while the span is in effect.
+   */
+  const handleCellSpanChange = (
+    rowIndex: number,
+    cellIndex: number,
+    colSpan: number,
+    rowSpan: number
+  ) => {
+    if (
+      !canSpanCell(
+        data.rows,
+        data.columns.length,
+        rowIndex,
+        cellIndex,
+        colSpan,
+        rowSpan
+      )
+    ) {
+      return;
+    }
+
+    const updatedRows = [...data.rows];
+    updatedRows[rowIndex] = {
+      ...updatedRows[rowIndex],
+      cells: updatedRows[rowIndex].cells.map((cell, i) =>
+        i === cellIndex
+          ? {
+              ...cell,
+              colSpan: colSpan > 1 ? colSpan : undefined,
+              rowSpan: rowSpan > 1 ? rowSpan : undefined,
+            }
+          : cell
+      ),
+    };
+
+    onChange({ ...data, rows: updatedRows });
+  };
+
+  /**
+   * Update row-level formatting (text / background color).
+   * Colors that are cleared are dropped so the row stays free of empty keys.
+   */
+  const handleRowFormatChange = (rowIndex: number, newFormat: RowFormat) => {
+    const cleaned: RowFormat = {};
+    if (newFormat.color) cleaned.color = newFormat.color;
+    if (newFormat.backgroundColor)
+      cleaned.backgroundColor = newFormat.backgroundColor;
+
+    const updatedRows = [...data.rows];
+    updatedRows[rowIndex] = {
+      ...updatedRows[rowIndex],
+      format: Object.keys(cleaned).length > 0 ? cleaned : undefined,
+    };
+
+    const updatedData: TableData = {
+      ...data,
+      rows: updatedRows,
+    };
+    onChange(updatedData);
+  };
+
+  /**
+   * Append an anchor (or any HTML snippet) to a cell's HTML content
+   */
+  const handleInsertLink = (
+    rowIndex: number,
+    cellIndex: number,
+    anchorHtml: string
+  ) => {
+    const updatedRows = [...data.rows];
+    updatedRows[rowIndex] = {
+      ...updatedRows[rowIndex],
+      cells: updatedRows[rowIndex].cells.map((cell, i) => {
+        if (i !== cellIndex) return cell;
+        const existing = cell.content ?? "";
+        // Add a space separator when appending to existing content
+        const separator = existing && !existing.endsWith(" ") ? " " : "";
+        return { ...cell, content: `${existing}${separator}${anchorHtml}` };
+      }),
+    };
+
+    const updatedData: TableData = {
+      ...data,
+      rows: updatedRows,
+    };
+    onChange(updatedData);
+  };
+
+  /**
    * Get the currently selected cell
    */
   const getSelectedCellData = () => {
@@ -325,6 +436,17 @@ export function TableBuilder({ data, onChange }: TableBuilderProps) {
   };
 
   const selectedCellData = getSelectedCellData();
+
+  // Grid positions hidden behind a merged cell — rendered as no <td> at all
+  const coveredCells = computeCoveredCells(data.rows, data.columns.length);
+
+  const selectedSpan = getCellSpan(selectedCellData ?? undefined);
+
+  // A selection can end up under a merged neighbour after rows/columns move;
+  // such a cell has no <td> of its own, so there is nothing to format.
+  const isSelectionCovered = selectedCell
+    ? (coveredCells[selectedCell.rowIndex]?.[selectedCell.cellIndex] ?? false)
+    : false;
 
   return (
     <Card className="border-2 shadow-xl bg-card/95 backdrop-blur">
@@ -361,7 +483,7 @@ export function TableBuilder({ data, onChange }: TableBuilderProps) {
           </div>
 
           {/* Cell formatting toolbar */}
-          {selectedCell && selectedCellData && (
+          {selectedCell && selectedCellData && !isSelectionCovered && (
             <div className="border-2 rounded-xl p-4 bg-gradient-to-br from-primary/5 to-primary/10 shadow-lg animate-in slide-in-from-top-2 duration-300">
               <div className="mb-3 flex items-center gap-2">
                 <div className="h-1.5 w-1.5 bg-primary rounded-full animate-pulse" />
@@ -380,6 +502,67 @@ export function TableBuilder({ data, onChange }: TableBuilderProps) {
                   )
                 }
               />
+              <div className="mt-4">
+                <CellLinkEditor
+                  onInsert={(anchorHtml) =>
+                    handleInsertLink(
+                      selectedCell.rowIndex,
+                      selectedCell.cellIndex,
+                      anchorHtml
+                    )
+                  }
+                />
+              </div>
+
+              {/* Merge the selected cell across columns / rows */}
+              <div className="mt-4">
+                <div className="mb-3 flex items-center gap-2">
+                  <div className="h-1.5 w-1.5 rounded-full bg-primary/60" />
+                  <span className="text-sm font-semibold text-primary">
+                    Merge cells
+                  </span>
+                </div>
+                <CellSpanControls
+                  colSpan={selectedSpan.colSpan}
+                  rowSpan={selectedSpan.rowSpan}
+                  maxColSpan={data.columns.length - selectedCell.cellIndex}
+                  maxRowSpan={data.rows.length - selectedCell.rowIndex}
+                  canSpan={(colSpan, rowSpan) =>
+                    canSpanCell(
+                      data.rows,
+                      data.columns.length,
+                      selectedCell.rowIndex,
+                      selectedCell.cellIndex,
+                      colSpan,
+                      rowSpan
+                    )
+                  }
+                  onChange={(colSpan, rowSpan) =>
+                    handleCellSpanChange(
+                      selectedCell.rowIndex,
+                      selectedCell.cellIndex,
+                      colSpan,
+                      rowSpan
+                    )
+                  }
+                />
+              </div>
+
+              {/* Row-level colors for the selected cell's row */}
+              <div className="mt-4">
+                <div className="mb-3 flex items-center gap-2">
+                  <div className="h-1.5 w-1.5 rounded-full bg-primary/60" />
+                  <span className="text-sm font-semibold text-primary">
+                    Row {selectedCell.rowIndex + 1} colors
+                  </span>
+                </div>
+                <RowFormatToolbar
+                  format={data.rows[selectedCell.rowIndex]?.format}
+                  onChange={(newFormat) =>
+                    handleRowFormatChange(selectedCell.rowIndex, newFormat)
+                  }
+                />
+              </div>
             </div>
           )}
 
@@ -498,6 +681,33 @@ export function TableBuilder({ data, onChange }: TableBuilderProps) {
                         >
                           {row.isHeader ? "Header" : "Normal"}
                         </Button>
+                        {/* Quick row colors */}
+                        <div className="flex items-center gap-1.5">
+                          <ColorPicker
+                            compact
+                            variant="text"
+                            value={row.format?.color}
+                            onChange={(color) =>
+                              handleRowFormatChange(rowIndex, {
+                                ...row.format,
+                                color,
+                              })
+                            }
+                            title={`Row ${rowIndex + 1} text color`}
+                          />
+                          <ColorPicker
+                            compact
+                            variant="fill"
+                            value={row.format?.backgroundColor}
+                            onChange={(backgroundColor) =>
+                              handleRowFormatChange(rowIndex, {
+                                ...row.format,
+                                backgroundColor,
+                              })
+                            }
+                            title={`Row ${rowIndex + 1} background color`}
+                          />
+                        </div>
                         <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
                           <Button
                             size="sm"
@@ -522,31 +732,64 @@ export function TableBuilder({ data, onChange }: TableBuilderProps) {
                       </div>
                     </td>
                     {/* Table cells */}
-                    {row.cells.map((cell, cellIndex) => (
-                      <td
-                        key={cell.id}
-                        className={`border p-0 transition-all ${
-                          row.isHeader ? "bg-gradient-to-br from-muted/30 to-muted/20" : "bg-background"
-                        } ${
-                          selectedCell?.rowIndex === rowIndex &&
-                          selectedCell?.cellIndex === cellIndex
-                            ? "ring-2 ring-primary ring-inset shadow-lg shadow-primary/20 scale-[1.02] z-10"
-                            : "hover:bg-muted/30"
-                        }`}
-                        onClick={() =>
-                          setSelectedCell({ rowIndex, cellIndex })
-                        }
-                      >
-                        <EditableCell
-                          value={cell.content}
-                          onChange={(newContent) =>
-                            handleCellChange(rowIndex, cellIndex, newContent)
+                    {row.cells.map((cell, cellIndex) => {
+                      // Hidden behind a neighbouring cell's colspan/rowspan
+                      if (coveredCells[rowIndex][cellIndex]) return null;
+
+                      const { colSpan, rowSpan } = getCellSpan(cell);
+                      const isMerged = colSpan > 1 || rowSpan > 1;
+
+                      // Custom colors replace the default cell chrome so the
+                      // editor previews exactly what gets rendered.
+                      const { backgroundColor } = resolveCellColors(
+                        cell.format,
+                        row.format
+                      );
+
+                      return (
+                        <td
+                          key={cell.id}
+                          colSpan={colSpan > 1 ? colSpan : undefined}
+                          rowSpan={rowSpan > 1 ? rowSpan : undefined}
+                          style={backgroundColor ? { backgroundColor } : undefined}
+                          className={`relative border p-0 transition-all ${
+                            backgroundColor
+                              ? ""
+                              : row.isHeader
+                              ? "bg-gradient-to-br from-muted/30 to-muted/20"
+                              : "bg-background"
+                          } ${
+                            selectedCell?.rowIndex === rowIndex &&
+                            selectedCell?.cellIndex === cellIndex
+                              ? "ring-2 ring-primary ring-inset shadow-lg shadow-primary/20 scale-[1.02] z-10"
+                              : backgroundColor
+                              ? ""
+                              : "hover:bg-muted/30"
+                          }`}
+                          onClick={() =>
+                            setSelectedCell({ rowIndex, cellIndex })
                           }
-                          isHeader={row.isHeader}
-                          format={cell.format}
-                        />
-                      </td>
-                    ))}
+                        >
+                          <EditableCell
+                            value={cell.content}
+                            onChange={(newContent) =>
+                              handleCellChange(rowIndex, cellIndex, newContent)
+                            }
+                            isHeader={row.isHeader}
+                            format={cell.format}
+                            rowFormat={row.format}
+                          />
+                          {isMerged && (
+                            <span
+                              className="pointer-events-none absolute right-1 top-1 rounded bg-primary/15 px-1 text-[9px] font-bold leading-4 text-primary"
+                              title={`Merged across ${colSpan} column(s) and ${rowSpan} row(s)`}
+                            >
+                              {colSpan}×{rowSpan}
+                            </span>
+                          )}
+                        </td>
+                      );
+                    })}
                   </tr>
                 ))}
               </tbody>

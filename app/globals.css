@@ -646,3 +646,12 @@
     @apply bg-background text-foreground;
   }
 }
+/* Rendered inline HTML inside table cells (links, emphasis, etc.) */
+.cell-html a {
+  color: hsl(var(--primary));
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.cell-html a:hover {
+  opacity: 0.8;
+}

@@ -13,6 +13,7 @@ import {
   validateTableData,
 } from "@/lib/types/table";
 import { TableBuilder } from "./table-builder";
+import { loadLegacyTable } from "@/lib/legacy-fetch";
 import { Save, X, AlertCircle } from "lucide-react";
 
 /**
@@ -29,6 +30,9 @@ export function GridComposer() {
   const [originalData, setOriginalData] = useState<string | null>(null);
   const [isDirty, setIsDirty] = useState(false);
 
+  // Current Sitecore item ID (from pages.context)
+  const [itemId, setItemId] = useState<string | null>(null);
+
   // UI state
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -44,21 +48,52 @@ export function GridComposer() {
         setIsLoading(true);
         setError(null);
 
-        // Get current field value from Sitecore
+        // Get current field value from Sitecorenpm
         const fieldValue = await client.getValue();
+
+        // Get the current item ID from the page context
+        try {
+          const contextRes = await client.query("pages.context");
+          const currentItemId = contextRes.data?.pageInfo?.itemId ?? null;
+          setItemId(currentItemId);
+          if (currentItemId) console.log("Current item ID:", currentItemId);
+        } catch (err) {
+          console.error("pages.context error:", err);
+        }
+
         console.log("Loaded field value:", fieldValue);
+
+        const hasFieldValue =
+          !!fieldValue &&
+          typeof fieldValue === "string" &&
+          fieldValue.trim().length > 0;
 
         let parsedData: TableData | null = null;
 
-        if (fieldValue && typeof fieldValue === "string" && fieldValue.trim()) {
+        if (hasFieldValue) {
           // Try to parse existing data
-          parsedData = parseTableData(fieldValue);
+          parsedData = parseTableData(fieldValue as string);
 
           if (!parsedData) {
             console.warn("Invalid table data in field, creating new table");
             setError(
               "Existing data was invalid. Starting with a new table."
             );
+          }
+        } else {
+          // Empty field => the item may still be on the legacy "dynamic table"
+          // format (row_/column_ child items). Try to migrate it.
+          const migrated = await loadLegacyTable(client);
+          if (migrated) {
+            setTableData(migrated);
+            // Keep it "unsaved" so the user reviews and clicks Save to persist
+            // the migrated JSON into the field.
+            setOriginalData("");
+            setIsDirty(true);
+            setSuccessMessage(
+              "Migrated from the legacy table format. Review it and click Save to persist."
+            );
+            return;
           }
         }
 
